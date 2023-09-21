@@ -58,7 +58,7 @@ import Prelude hiding (maybe)
 import Data.Char(isLetter)
 import Data.Either(either)
 import Data.List (intercalate)
-import Language.Haskell.TH
+import Language.Haskell.TH hiding (Arity)
 import Language.Haskell.TH.Syntax (Lift(..))
 import Data.Typeable(Typeable)  -- for the new exception
 import Control.Exception(Exception, throw)  -- to add a new exception
@@ -233,7 +233,7 @@ contextVar _              = varE 'context
 -- E.g. $(deriveContracts \'\'Either)
 deriveContracts :: Name -> Q [Dec]
 deriveContracts dataTyName = do
-  (TyConI (DataD _ _ _ constructors _)) <- reify dataTyName
+  (TyConI (DataD _ _ _ _ constructors _)) <- reify dataTyName
   conNameArities <- mapM conNameArity constructors
   let conNames = map fst conNameArities
   conContracts <- mapM deriveConContract conNames
@@ -247,8 +247,8 @@ deriveContracts dataTyName = do
 -- any fixity declaration; so that is left to the user.
 deriveConContract :: Name -> Q [Dec]
 deriveConContract conName = do
-  (DataConI _ conTy dataTyName _) <- reify conName
-  (TyConI (DataD cxt _ _ constructors _)) <- reify dataTyName
+  (DataConI _ conTy dataTyName) <- reify conName
+  (TyConI (DataD cxt _ _ _ constructors _)) <- reify dataTyName
   tyDec <- sigD pname (return (conContractType cxt conTy))
   runIO (putStrLn (pprint conTy))
   runIO (putStrLn (pprint cxt))
@@ -267,8 +267,8 @@ deriveNotContract :: Name -> Q [Dec]
 deriveNotContract conName =
   if isLetter (head name) 
     then do
-       (DataConI _ conTy dataTyName _) <- reify conName
-       (TyConI (DataD cxt _ tyVars constructors _)) <- reify dataTyName
+       (DataConI _ conTy dataTyName) <- reify conName
+       (TyConI (DataD cxt _ tyVars _ constructors _)) <- reify dataTyName
        tyDec <- sigD pname (return (notContractType cxt dataTyName tyVars))
        def <- valD (varP pname) (normalB (pNot conName)) []
        return [tyDec,def]
@@ -278,17 +278,21 @@ deriveNotContract conName =
   pname = mkName ("pNot" ++ name)
 
 -- Construct the type for a not constructor contract
-notContractType :: Cxt -> Name -> [TyVarBndr] -> Type
+notContractType :: Cxt -> Name -> [TyVarBndr a] -> Type
 notContractType cxt tyName tyVars =
-  ForallT tyVars cxt 
+  ForallT (mkSpecific <$> tyVars) cxt 
     (AppT (ConT ''Contract) 
       (if null tyVars
         then (ConT tyName) 
         else AppT (ConT tyName) (foldr1 AppT (map mkTVar tyVars))))
   where
-  mkTVar :: TyVarBndr -> Type
-  mkTVar (PlainTV name) = VarT name
-  mkTVar (KindedTV name _) = VarT name
+  mkTVar :: TyVarBndr a -> Type
+  mkTVar (PlainTV name _) = VarT name
+  mkTVar (KindedTV name _ _) = VarT name
+  
+  mkSpecific :: TyVarBndr a -> TyVarBndr Specificity
+  mkSpecific (PlainTV name _) = PlainTV name SpecifiedSpec
+  mkSpecific (KindedTV name  _ knd) = KindedTV name SpecifiedSpec knd
 
 -- Convert type of a data constructor into type of its pattern contract.
 -- Apparently a bug in TH means that the context of the given data constructor
@@ -330,8 +334,8 @@ name2Con conName cons = head (filter (isConName conName) cons)
 -- $(p \'Left)
 p :: Name -> ExpQ
 p conName = do
-  (DataConI _ conTy dataTyName fixity) <- reify conName
-  (TyConI (DataD _ _ _ constructors _)) <- reify dataTyName
+  (DataConI _ conTy dataTyName) <- reify conName
+  (TyConI (DataD _ _ _ _ constructors _)) <- reify dataTyName
   let conArity = arity conName constructors
   conArgNames <- mapM (const (newName "c")) [1..conArity]
   projName <- newName "proj"
@@ -343,8 +347,8 @@ p conName = do
 -- $(pNot \'Left)
 pNot :: Name -> ExpQ
 pNot conName = do
-  (DataConI _ conTy dataTyName _) <- reify conName
-  (TyConI (DataD _ _ _ constructors _)) <- reify dataTyName
+  (DataConI _ conTy dataTyName) <- reify conName
+  (TyConI (DataD _ _ _ _ constructors _)) <- reify dataTyName
   let conArity = arity conName constructors
   projName <- newName "proj"
   let projDef = 
